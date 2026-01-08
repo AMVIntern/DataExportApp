@@ -50,114 +50,110 @@ public class EmailViewModel
                 return;
             }
 
-            // Read Top CSV
-            string[] topLines = File.ReadAllLines(topFile);
-            if (topLines.Length < 2) // Need at least header + 1 data row
+            // Read Top CSV with dynamic column handling
+            var topData = ReadCsvFile(topFile, "Top");
+            if (topData == null || topData.Rows.Count == 0)
             {
                 Console.WriteLine("Top CSV file has insufficient data rows.");
                 return;
             }
-            string[] topHeader = topLines[0].Split(',');
-            // Reorder topHeader to move Shift to third position
-            string[] reorderedTopHeader = new[] { topHeader[1], topHeader[2], topHeader[0], topHeader[3], topHeader[4], topHeader[5] };
-            List<TopRow> topRows = new List<TopRow>();
-            for (int k = 1; k < topLines.Length; k++)
+
+            // Read Bottom CSV with dynamic column handling
+            var bottomData = ReadCsvFile(bottomFile, "Bottom");
+            if (bottomData == null || bottomData.Rows.Count == 0)
             {
-                string[] vals = topLines[k].Split(',');
-                if (vals.Length != topHeader.Length) continue;
-                var row = new TopRow
-                {
-                    TopDate = vals[1],
-                    TopTimestamp = vals[2],
-                    Shift = vals[0], // Read Shift from first column
-                    TopBoardCount = double.Parse(vals[3], CultureInfo.InvariantCulture),
-                    TopSquarenessDifference = double.Parse(vals[4], CultureInfo.InvariantCulture),
-                    TopOverallPass = double.Parse(vals[5], CultureInfo.InvariantCulture)
-                };
-                try
-                {
-                    DateTime date = DateTime.ParseExact(row.TopDate, "dd-MMM-yyyy", CultureInfo.InvariantCulture);
-                    TimeSpan time = TimeSpan.ParseExact(row.TopTimestamp, @"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture);
-                    row.FullTimestamp = date + time;
-                }
-                catch
-                {
-                    Console.WriteLine($"Invalid date/timestamp in Top row {k}");
-                    continue;
-                }
-                topRows.Add(row);
+                Console.WriteLine("Bottom CSV file has insufficient data rows.");
+                return;
             }
 
-            // Read Bottom CSV
-            string[] bottomLines = File.ReadAllLines(bottomFile);
-            if (bottomLines.Length < 1) return;
-            string[] bottomHeader = bottomLines[0].Split(',').Skip(2).ToArray(); // Skip Bot:Date and Bot:Timestamp
-            List<BottomRow> bottomRows = new List<BottomRow>();
-            for (int k = 1; k < bottomLines.Length; k++)
+            // Find date and timestamp columns dynamically
+            string topDateCol = FindColumnByName(topData.Headers, new[] { "date", "topdate", "top:date" });
+            string topTimestampCol = FindColumnByName(topData.Headers, new[] { "timestamp", "toptimestamp", "top:timestamp", "time" });
+            string bottomDateCol = FindColumnByName(bottomData.Headers, new[] { "date", "botdate", "bottom:date", "bot:date" });
+            string bottomTimestampCol = FindColumnByName(bottomData.Headers, new[] { "timestamp", "bottimestamp", "bottom:timestamp", "bot:timestamp", "time" });
+
+            if (string.IsNullOrEmpty(topDateCol) || string.IsNullOrEmpty(topTimestampCol) ||
+                string.IsNullOrEmpty(bottomDateCol) || string.IsNullOrEmpty(bottomTimestampCol))
             {
-                string[] vals = bottomLines[k].Split(',');
-                if (vals.Length != bottomHeader.Length + 2) continue; // Adjust for skipped columns
-                var row = new BottomRow
-                {
-                    BotDate = vals[0],
-                    BotTimestamp = vals[1],
-                    BotBoardCount = double.Parse(vals[2], CultureInfo.InvariantCulture),
-                    BotBLB1_B1PushBack = double.Parse(vals[3], CultureInfo.InvariantCulture),
-                    BotBLB1_B3PushBack = double.Parse(vals[4], CultureInfo.InvariantCulture),
-                    BotBLB1MaxPushBackDist = double.Parse(vals[5], CultureInfo.InvariantCulture),
-                    BotBLB1Width = double.Parse(vals[6], CultureInfo.InvariantCulture),
-                    BotTG1MinTunnelGapDist = double.Parse(vals[7], CultureInfo.InvariantCulture),
-                    BotBIB2TopOffsetDist = double.Parse(vals[8], CultureInfo.InvariantCulture),
-                    BotBIB2BottomOffsetDist = double.Parse(vals[9], CultureInfo.InvariantCulture),
-                    BotTG2MinTunnelGapDist = double.Parse(vals[10], CultureInfo.InvariantCulture),
-                    BotBLB2Width = double.Parse(vals[11], CultureInfo.InvariantCulture),
-                    BotBLB2_B1PushBack = double.Parse(vals[12], CultureInfo.InvariantCulture),
-                    BotBLB2_B3PushBack = double.Parse(vals[13], CultureInfo.InvariantCulture),
-                    BotBLB2MaxPushBackDist = double.Parse(vals[14], CultureInfo.InvariantCulture),
-                    BotOverall_Result = double.Parse(vals[15], CultureInfo.InvariantCulture)
-                };
-                try
-                {
-                    DateTime date = DateTime.ParseExact(row.BotDate, "dd-MMM-yyyy", CultureInfo.InvariantCulture);
-                    TimeSpan time = TimeSpan.ParseExact(row.BotTimestamp, @"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture);
-                    row.FullTimestamp = date + time;
-                }
-                catch
-                {
-                    Console.WriteLine($"Invalid date/timestamp in Bottom row {k}");
-                    continue;
-                }
-                bottomRows.Add(row);
+                Console.WriteLine("Could not find required date/timestamp columns in CSV files.");
+                return;
             }
+
+            // Calculate full timestamps for matching
+            CalculateFullTimestamps(topData.Rows, topDateCol, topTimestampCol);
+            CalculateFullTimestamps(bottomData.Rows, bottomDateCol, bottomTimestampCol);
 
             // Sort both lists by FullTimestamp
-            topRows = topRows.OrderBy(r => r.FullTimestamp).ToList();
-            bottomRows = bottomRows.OrderBy(r => r.FullTimestamp).ToList();
+            topData.Rows = topData.Rows.OrderBy(r => r.FullTimestamp).ToList();
+            bottomData.Rows = bottomData.Rows.OrderBy(r => r.FullTimestamp).ToList();
 
-            // Combine headers, including Assured_Result
-            string[] combinedHeader = reorderedTopHeader.Concat(bottomHeader).Concat(new[] { "Assured_Result" }).ToArray();
+            // Find columns for calculations (look for "Overall" or "Pass" or "Result" patterns)
+            string topOverallCol = FindColumnByName(topData.Headers, new[] { "overall", "pass", "result", "overallpass" }, true);
+            string bottomOverallCol = FindColumnByName(bottomData.Headers, new[] { "overall", "pass", "result", "overall_result" }, true);
+
+            // Combine headers - preserve all columns from both files
+            var combinedHeaders = new List<string>(topData.Headers);
+            // Add bottom headers, avoiding duplicates and excluding Bot:Date and Bot:Timestamp
+            string[] excludedColumns = { "Bot:Date", "Bot:Timestamp" };
+            foreach (var header in bottomData.Headers)
+            {
+                if (!combinedHeaders.Contains(header, StringComparer.OrdinalIgnoreCase) &&
+                    !excludedColumns.Contains(header, StringComparer.OrdinalIgnoreCase))
+                {
+                    combinedHeaders.Add(header);
+                }
+            }
+            combinedHeaders.Add("Assured_Result");
 
             // Prepare combined data
-            List<string[]> combinedData = new List<string[]>();
-            combinedData.Add(combinedHeader);
+            List<Dictionary<string, string>> combinedRows = new List<Dictionary<string, string>>();
 
             // Match only rows within 1.5 seconds, ignoring unmatched rows, and calculate Assured_Result
             int i = 0, j = 0;
-            while (i < topRows.Count && j < bottomRows.Count)
+            while (i < topData.Rows.Count && j < bottomData.Rows.Count)
             {
-                double diff = Math.Abs((topRows[i].FullTimestamp.Value - bottomRows[j].FullTimestamp.Value).TotalSeconds);
+                if (!topData.Rows[i].FullTimestamp.HasValue || !bottomData.Rows[j].FullTimestamp.HasValue)
+                {
+                    i++;
+                    j++;
+                    continue;
+                }
+
+                double diff = Math.Abs((topData.Rows[i].FullTimestamp.Value - bottomData.Rows[j].FullTimestamp.Value).TotalSeconds);
                 if (diff < 1.5) // Match within 1.5 seconds
                 {
-                    // Calculate Assured_Result as TopOverallPass * BotOverall_Result
-                    double assuredResult = topRows[i].TopOverallPass * bottomRows[j].BotOverall_Result;
-                    string[] topData = topRows[i].ToStringArray();
-                    string[] bottomData = bottomRows[j].ToStringArray();
-                    string[] row = topData.Concat(bottomData).Concat(new[] { assuredResult.ToString(CultureInfo.InvariantCulture) }).ToArray();
-                    combinedData.Add(row);
+                    var combinedRow = new Dictionary<string, string>(topData.Rows[i].Data, StringComparer.OrdinalIgnoreCase);
+
+                    // Merge bottom data, avoiding duplicates
+                    foreach (var kvp in bottomData.Rows[j].Data)
+                    {
+                        if (!combinedRow.ContainsKey(kvp.Key))
+                        {
+                            combinedRow[kvp.Key] = kvp.Value;
+                        }
+                    }
+
+                    // Calculate Assured_Result if both overall columns exist
+                    if (!string.IsNullOrEmpty(topOverallCol) && !string.IsNullOrEmpty(bottomOverallCol) &&
+                        topData.Rows[i].Data.ContainsKey(topOverallCol) && bottomData.Rows[j].Data.ContainsKey(bottomOverallCol))
+                    {
+                        if (double.TryParse(topData.Rows[i].Data[topOverallCol], NumberStyles.Any, CultureInfo.InvariantCulture, out double topVal) &&
+                            double.TryParse(bottomData.Rows[j].Data[bottomOverallCol], NumberStyles.Any, CultureInfo.InvariantCulture, out double bottomVal))
+                        {
+                            double assuredResult = topVal * bottomVal;
+                            combinedRow["Assured_Result"] = assuredResult.ToString(CultureInfo.InvariantCulture);
+                        }
+                    }
+                    else
+                    {
+                        combinedRow["Assured_Result"] = "";
+                    }
+
+                    combinedRows.Add(combinedRow);
                     i++;
                     j++;
                 }
-                else if (topRows[i].FullTimestamp < bottomRows[j].FullTimestamp)
+                else if (topData.Rows[i].FullTimestamp < bottomData.Rows[j].FullTimestamp)
                 {
                     i++; // Skip unmatched Top row
                 }
@@ -167,37 +163,38 @@ public class EmailViewModel
                 }
             }
 
-            // Save combined CSV with CSV-derived naming convention
-            string dateTimeString = DateTime.Now.ToString("dd-MM-yyyy_HH-mm-ss"); // Use current time for file name uniqueness
-            string combinedFile = Path.Combine(combinedFolder, $"Gocator_Report_Shift_{combinedData[1][2]}_{combinedData[1][0]}.csv"); using (StreamWriter writer = new StreamWriter(combinedFile))
+            if (combinedRows.Count == 0)
             {
-                foreach (var row in combinedData)
+                Console.WriteLine("No matching rows found between Top and Bottom CSV files.");
+                return;
+            }
+
+            // Save combined CSV
+            string shiftCol = FindColumnByName(combinedHeaders, new[] { "shift" });
+            string dateCol = FindColumnByName(combinedHeaders, new[] { "date", "topdate" });
+
+            string shiftValue = combinedRows[0].ContainsKey(shiftCol) ? combinedRows[0][shiftCol] : "Unknown";
+            string dateValue = combinedRows[0].ContainsKey(dateCol) ? combinedRows[0][dateCol] : DateTime.Now.ToString("dd-MMM-yyyy");
+
+            string combinedFile = Path.Combine(combinedFolder, $"Gocator_Report_Shift_{shiftValue}_{dateValue}.csv");
+
+            using (StreamWriter writer = new StreamWriter(combinedFile))
+            {
+                // Write header
+                writer.WriteLine(string.Join(",", combinedHeaders));
+
+                // Write rows
+                foreach (var row in combinedRows)
                 {
-                    writer.WriteLine(string.Join(",", row));
+                    var rowValues = combinedHeaders.Select(h => row.ContainsKey(h) ? row[h] : "").ToArray();
+                    writer.WriteLine(string.Join(",", rowValues));
                 }
             }
             Console.WriteLine($"Combined CSV saved to: {combinedFile}");
 
-            // Read shift and date from the first data row of the combined file
-            if (combinedData.Count < 2)
-            {
-                Console.WriteLine("Combined CSV has no data rows.");
-                return;
-            }
-            string combinedShift = combinedData[1][2]; // Shift is in the third column (index 2) after reordering
-            string combinedDate = combinedData[1][0];  // Date is in the first column (index 0)
-            string combinedTimestamp = combinedData[1][1]; // Timestamp is in the second column (index 1)
-            DateTime combinedReportDate;
-            try
-            {
-                combinedReportDate = DateTime.ParseExact(combinedDate, "dd-MMM-yyyy", CultureInfo.InvariantCulture)
-                    + TimeSpan.ParseExact(combinedTimestamp, @"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture);
-            }
-            catch
-            {
-                Console.WriteLine("Invalid date or timestamp in first row of combined CSV.");
-                return;
-            }
+            // Extract date and shift for email
+            string combinedShift = shiftValue;
+            string combinedDate = dateValue;
 
             // Set attachment path and update email content with combined file data
             _emailData.AttachmentPath = combinedFile;
@@ -208,6 +205,154 @@ public class EmailViewModel
         catch (Exception ex)
         {
             Console.WriteLine($"Error generating report: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+        }
+    }
+
+    private CsvData ReadCsvFile(string filePath, string sourceName)
+    {
+        try
+        {
+            string[] lines = File.ReadAllLines(filePath);
+            if (lines.Length < 2)
+            {
+                Console.WriteLine($"{sourceName} CSV file has insufficient data rows.");
+                return null;
+            }
+
+            string[] headers = lines[0].Split(',').Select(h => h.Trim()).ToArray();
+            var rows = new List<CsvRow>();
+
+            for (int i = 1; i < lines.Length; i++)
+            {
+                string[] values = lines[i].Split(',');
+                if (values.Length != headers.Length)
+                {
+                    Console.WriteLine($"Row {i} in {sourceName} CSV has {values.Length} columns, expected {headers.Length}. Skipping.");
+                    continue;
+                }
+
+                var rowData = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                for (int j = 0; j < headers.Length; j++)
+                {
+                    rowData[headers[j]] = values[j].Trim();
+                }
+
+                rows.Add(new CsvRow { Data = rowData });
+            }
+
+            return new CsvData { Headers = headers, Rows = rows };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error reading {sourceName} CSV file: {ex.Message}");
+            return null;
+        }
+    }
+
+    private string FindColumnByName(string[] headers, string[] possibleNames, bool containsMatch = false)
+    {
+        foreach (var header in headers)
+        {
+            string headerLower = header.ToLower();
+            foreach (var name in possibleNames)
+            {
+                if (containsMatch)
+                {
+                    if (headerLower.Contains(name.ToLower()))
+                        return header;
+                }
+                else
+                {
+                    if (headerLower.Equals(name.ToLower()) || headerLower.Replace(":", "").Equals(name.ToLower()))
+                        return header;
+                }
+            }
+        }
+        return null;
+    }
+
+    private string FindColumnByName(List<string> headers, string[] possibleNames, bool containsMatch = false)
+    {
+        return FindColumnByName(headers.ToArray(), possibleNames, containsMatch);
+    }
+
+    private void CalculateFullTimestamps(List<CsvRow> rows, string dateCol, string timestampCol)
+    {
+        foreach (var row in rows)
+        {
+            if (!row.Data.ContainsKey(dateCol) || !row.Data.ContainsKey(timestampCol))
+                continue;
+
+            string dateStr = row.Data[dateCol];
+            string timeStr = row.Data[timestampCol].Trim();
+
+            bool parsed = false;
+
+            // Try parsing date first
+            DateTime date;
+            if (!DateTime.TryParseExact(dateStr, "dd-MMM-yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
+            {
+                if (!DateTime.TryParse(dateStr, out date))
+                {
+                    continue; // Skip if date can't be parsed
+                }
+            }
+
+            // Check if timestamp contains AM/PM (12-hour format)
+            if (timeStr.Contains("AM", StringComparison.OrdinalIgnoreCase) || 
+                timeStr.Contains("PM", StringComparison.OrdinalIgnoreCase))
+            {
+                // Try 12-hour format with AM/PM: "hh:mm:ss tt" or "h:mm:ss tt"
+                string[] formats12Hour = { 
+                    "h:mm:ss tt", 
+                    "hh:mm:ss tt",
+                    "h:mm:ss.fff tt",
+                    "hh:mm:ss.fff tt"
+                };
+
+                foreach (var format in formats12Hour)
+                {
+                    if (DateTime.TryParseExact(timeStr, format, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime timeOnly))
+                    {
+                        row.FullTimestamp = date.Date + timeOnly.TimeOfDay;
+                        parsed = true;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                // Try 24-hour format with milliseconds: "hh:mm:ss.fff"
+                if (TimeSpan.TryParseExact(timeStr, @"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture, out TimeSpan time))
+                {
+                    row.FullTimestamp = date.Date + time;
+                    parsed = true;
+                }
+                // Try 24-hour format without milliseconds: "hh:mm:ss"
+                else if (TimeSpan.TryParseExact(timeStr, @"hh\:mm\:ss", CultureInfo.InvariantCulture, out time))
+                {
+                    row.FullTimestamp = date.Date + time;
+                    parsed = true;
+                }
+            }
+
+            // Fallback: Try generic TimeSpan parsing
+            if (!parsed && TimeSpan.TryParse(timeStr, out TimeSpan fallbackTime))
+            {
+                row.FullTimestamp = date.Date + fallbackTime;
+                parsed = true;
+            }
+
+            // If still not parsed, try parsing as full DateTime string
+            if (!parsed)
+            {
+                string combinedDateTime = $"{dateStr} {timeStr}";
+                if (DateTime.TryParse(combinedDateTime, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime fullDateTime))
+                {
+                    row.FullTimestamp = fullDateTime;
+                }
+            }
         }
     }
 
@@ -287,68 +432,15 @@ public class EmailViewModel
     }
 }
 
-public class TopRow
+// Column-agnostic data structures
+public class CsvData
 {
-    public string TopDate { get; set; }
-    public string TopTimestamp { get; set; }
-    public string Shift { get; set; }
-    public double TopBoardCount { get; set; }
-    public double TopSquarenessDifference { get; set; }
-    public double TopOverallPass { get; set; }
-    public DateTime? FullTimestamp { get; set; }
-
-    public string[] ToStringArray()
-    {
-        return new[]
-        {
-            TopDate,
-            TopTimestamp,
-            Shift,
-            TopBoardCount.ToString(CultureInfo.InvariantCulture),
-            TopSquarenessDifference.ToString(CultureInfo.InvariantCulture),
-            TopOverallPass.ToString(CultureInfo.InvariantCulture)
-        };
-    }
+    public string[] Headers { get; set; }
+    public List<CsvRow> Rows { get; set; } = new List<CsvRow>();
 }
 
-public class BottomRow
+public class CsvRow
 {
-    public string BotDate { get; set; }
-    public string BotTimestamp { get; set; }
-    public double BotBoardCount { get; set; }
-    public double BotBLB1_B1PushBack { get; set; }
-    public double BotBLB1_B3PushBack { get; set; }
-    public double BotBLB1MaxPushBackDist { get; set; }
-    public double BotBLB1Width { get; set; }
-    public double BotTG1MinTunnelGapDist { get; set; }
-    public double BotBIB2TopOffsetDist { get; set; }
-    public double BotBIB2BottomOffsetDist { get; set; }
-    public double BotTG2MinTunnelGapDist { get; set; }
-    public double BotBLB2Width { get; set; }
-    public double BotBLB2_B1PushBack { get; set; }
-    public double BotBLB2_B3PushBack { get; set; }
-    public double BotBLB2MaxPushBackDist { get; set; }
-    public double BotOverall_Result { get; set; }
+    public Dictionary<string, string> Data { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public DateTime? FullTimestamp { get; set; }
-
-    public string[] ToStringArray()
-    {
-        return new[]
-        {
-            BotBoardCount.ToString(CultureInfo.InvariantCulture),
-            BotBLB1_B1PushBack.ToString(CultureInfo.InvariantCulture),
-            BotBLB1_B3PushBack.ToString(CultureInfo.InvariantCulture),
-            BotBLB1MaxPushBackDist.ToString(CultureInfo.InvariantCulture),
-            BotBLB1Width.ToString(CultureInfo.InvariantCulture),
-            BotTG1MinTunnelGapDist.ToString(CultureInfo.InvariantCulture),
-            BotBIB2TopOffsetDist.ToString(CultureInfo.InvariantCulture),
-            BotBIB2BottomOffsetDist.ToString(CultureInfo.InvariantCulture),
-            BotTG2MinTunnelGapDist.ToString(CultureInfo.InvariantCulture),
-            BotBLB2Width.ToString(CultureInfo.InvariantCulture),
-            BotBLB2_B1PushBack.ToString(CultureInfo.InvariantCulture),
-            BotBLB2_B3PushBack.ToString(CultureInfo.InvariantCulture),
-            BotBLB2MaxPushBackDist.ToString(CultureInfo.InvariantCulture),
-            BotOverall_Result.ToString(CultureInfo.InvariantCulture)
-        };
-    }
 }
