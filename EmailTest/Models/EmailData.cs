@@ -6,6 +6,7 @@ public class EmailData
     public string FromEmail { get; set; }
     public string AppPassword { get; set; }
     public List<string> ToEmails { get; set; }
+    public List<string> CcEmails { get; set; }
     public string Subject { get; set; }
     public string Body { get; set; }
     public string AttachmentPath { get; set; } // Will be set dynamically after generating the combined CSV

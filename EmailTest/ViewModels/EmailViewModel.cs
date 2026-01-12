@@ -67,10 +67,10 @@ public class EmailViewModel
             }
 
             // Find date and timestamp columns dynamically
-            string topDateCol = FindColumnByName(topData.Headers, new[] { "date", "topdate", "top:date" });
-            string topTimestampCol = FindColumnByName(topData.Headers, new[] { "timestamp", "toptimestamp", "top:timestamp", "time" });
-            string bottomDateCol = FindColumnByName(bottomData.Headers, new[] { "date", "botdate", "bottom:date", "bot:date" });
-            string bottomTimestampCol = FindColumnByName(bottomData.Headers, new[] { "timestamp", "bottimestamp", "bottom:timestamp", "bot:timestamp", "time" });
+            string topDateCol = FindColumnByName(topData.Headers, new[] { "top:date" });
+            string topTimestampCol = FindColumnByName(topData.Headers, new[] { "top:timestamp" });
+            string bottomDateCol = FindColumnByName(bottomData.Headers, new[] { "bot:date" });
+            string bottomTimestampCol = FindColumnByName(bottomData.Headers, new[] { "bot:timestamp" });
 
             if (string.IsNullOrEmpty(topDateCol) || string.IsNullOrEmpty(topTimestampCol) ||
                 string.IsNullOrEmpty(bottomDateCol) || string.IsNullOrEmpty(bottomTimestampCol))
@@ -88,8 +88,8 @@ public class EmailViewModel
             bottomData.Rows = bottomData.Rows.OrderBy(r => r.FullTimestamp).ToList();
 
             // Find columns for calculations (look for "Overall" or "Pass" or "Result" patterns)
-            string topOverallCol = FindColumnByName(topData.Headers, new[] { "overall", "pass", "result", "overallpass" }, true);
-            string bottomOverallCol = FindColumnByName(bottomData.Headers, new[] { "overall", "pass", "result", "overall_result" }, true);
+            string topOverallCol = FindColumnByName(topData.Headers, new[] { "top:overall pass" }, true);
+            string bottomOverallCol = FindColumnByName(bottomData.Headers, new[] { "bot:overall_result" }, true);
 
             // Combine headers - preserve all columns from both files
             var combinedHeaders = new List<string>(topData.Headers);
@@ -171,7 +171,7 @@ public class EmailViewModel
 
             // Save combined CSV
             string shiftCol = FindColumnByName(combinedHeaders, new[] { "shift" });
-            string dateCol = FindColumnByName(combinedHeaders, new[] { "date", "topdate" });
+            string dateCol = FindColumnByName(combinedHeaders, new[] { "top:date" });
 
             string shiftValue = combinedRows[0].ContainsKey(shiftCol) ? combinedRows[0][shiftCol] : "Unknown";
             string dateValue = combinedRows[0].ContainsKey(dateCol) ? combinedRows[0][dateCol] : DateTime.Now.ToString("dd-MMM-yyyy");
@@ -300,12 +300,12 @@ public class EmailViewModel
             }
 
             // Check if timestamp contains AM/PM (12-hour format)
-            if (timeStr.Contains("AM", StringComparison.OrdinalIgnoreCase) || 
+            if (timeStr.Contains("AM", StringComparison.OrdinalIgnoreCase) ||
                 timeStr.Contains("PM", StringComparison.OrdinalIgnoreCase))
             {
                 // Try 12-hour format with AM/PM: "hh:mm:ss tt" or "h:mm:ss tt"
-                string[] formats12Hour = { 
-                    "h:mm:ss tt", 
+                string[] formats12Hour = {
+                    "h:mm:ss tt",
                     "hh:mm:ss tt",
                     "h:mm:ss.fff tt",
                     "hh:mm:ss.fff tt"
@@ -376,6 +376,14 @@ public class EmailViewModel
                 {
                     Console.WriteLine("No recipients specified.");
                     return false;
+                }
+                // CC
+                if (_emailData.CcEmails != null && _emailData.CcEmails.Any())
+                {
+                    foreach (var ccEmail in _emailData.CcEmails)
+                    {
+                        mail.CC.Add(ccEmail);
+                    }
                 }
                 mail.Subject = _emailData.Subject;
                 mail.Body = _emailData.Body;

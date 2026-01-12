@@ -27,7 +27,7 @@ class Program
             // Define custom scheduled times (in 24-hour format)
             TimeSpan[] scheduledTimeSpans = new TimeSpan[]
             {
-                new TimeSpan(6, 8, 0), // 6:00 AM
+                new TimeSpan(6, 0, 0), // 6:00 AM
                 new TimeSpan(14, 0, 0), // 2:00 PM
                 new TimeSpan(22, 0, 0)  // 10:00 PM
             };
