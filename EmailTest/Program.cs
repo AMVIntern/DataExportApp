@@ -2,9 +2,14 @@
 using System.IO;
 using System.Threading;
 using System.Text.Json;
+using System.Linq;
 
 class Program
 {
+    private static ReportStateService _reportStateService;
+    private static EmailViewModel _viewModel;
+    private const int SafetyNetCheckIntervalSeconds = 45; // Check every 45 seconds
+
     static void Main(string[] args)
     {
         // Load configuration from JSON file
@@ -17,67 +22,178 @@ class Program
         }
 
         // Initialize ViewModel
-        var viewModel = new EmailViewModel(emailData);
+        _viewModel = new EmailViewModel(emailData);
+
+        // Initialize ReportStateService
+        string reportStatePath = @"C:\AMV\Gocator\report_state.json";
+        _reportStateService = new ReportStateService(reportStatePath);
+
+        // Check for pending reports on startup
+        Console.WriteLine("Checking for pending reports on startup...");
+        ProcessPendingReports();
 
         // Run in an infinite loop to wait for scheduled times
         while (true)
         {
             var now = DateTime.Now;
 
-            // Define custom scheduled times (in 24-hour format)
-            TimeSpan[] scheduledTimeSpans = new TimeSpan[]
-            {
-                new TimeSpan(6, 0, 0), // 6:00 AM
-                new TimeSpan(14, 0, 0), // 2:00 PM
-                new TimeSpan(22, 0, 0)  // 10:00 PM
-            };
-
             // Find the next scheduled time
-            DateTime nextScheduledTime = GetNextScheduledTime(now, scheduledTimeSpans);
+            DateTime nextScheduledTime = GetNextScheduledTime(now);
 
             // Check if the next scheduled time falls on a Saturday or Sunday
             while (nextScheduledTime.DayOfWeek == DayOfWeek.Saturday || nextScheduledTime.DayOfWeek == DayOfWeek.Sunday)
             {
                 // Move to the next Monday by adding days (6 if Sunday, 1 if Saturday)
-                int daysToAdd = nextScheduledTime.DayOfWeek == DayOfWeek.Sunday ? 1 : (8 - (int)nextScheduledTime.DayOfWeek);
-                nextScheduledTime = nextScheduledTime.AddDays(daysToAdd);
-                //nextScheduledTime = GetNextScheduledTime(nextScheduledTime, scheduledTimeSpans);
+                now = nextScheduledTime.AddDays(1);
+                //nextScheduledTime = GetNextScheduledTime(now, scheduledTimeSpans);
             }
 
             // Calculate initial delay to next scheduled time
             TimeSpan delay = nextScheduledTime - now;
             Console.WriteLine($"Next report scheduled at {nextScheduledTime}. Waiting for {delay.TotalMinutes:F2} minutes...");
 
-            // Update counter every 10 seconds until the scheduled time
+            // Update counter and check safety net periodically until the scheduled time
             while (now < nextScheduledTime)
             {
                 TimeSpan remaining = nextScheduledTime - DateTime.Now;
                 Console.Write($"\rRemaining time: {remaining.TotalMinutes:F2} minutes "); // \r for overwrite
-                Thread.Sleep(10000); // Update every 10 seconds
+                
+                // Check safety net for pending reports
+                ProcessPendingReports();
+                
+                Thread.Sleep(SafetyNetCheckIntervalSeconds * 1000); // Check every 45 seconds
                 now = DateTime.Now;
             }
             Console.WriteLine(); // New line after countdown
 
             // Generate combined CSV and send email (shift and date from CSV)
-            viewModel.GenerateAndSendReport();
+            ProcessScheduledReport(nextScheduledTime);
         }
     }
 
-    private static DateTime GetNextScheduledTime(DateTime now, TimeSpan[] scheduledTimeSpans)
+    private static void ProcessPendingReports()
     {
-        // Sort the scheduled times
-        var sortedTimes = scheduledTimeSpans.OrderBy(t => t).ToArray();
-        foreach (var timeSpan in sortedTimes)
+        try
         {
-            DateTime candidate = now.Date + timeSpan;
-            if (candidate > now)
+            var pendingReports = _reportStateService.GetPendingReports(DateTime.Now);
+            
+            foreach (var report in pendingReports)
             {
-                return candidate;
+                Console.WriteLine($"\nProcessing pending report: {report.FileName} (scheduled: {report.ScheduledTime})");
+                
+                var result = _viewModel.GenerateAndSendReport(report.FileName);
+                
+                if (result.Success)
+                {
+                    // Use the actual filename returned from EmailViewModel
+                    string actualFileName = result.FileName ?? report.FileName;
+                    _reportStateService.MarkReportAsSent(actualFileName, report.ScheduledDateTime);
+                    Console.WriteLine($"Successfully processed and marked as sent: {actualFileName}");
+                }
+                else
+                {
+                    Console.WriteLine($"Failed to process report: {report.FileName}. Will retry on next check.");
+                }
             }
         }
-        // If all times today have passed, return the first time tomorrow
-        return now.Date.AddDays(1) + sortedTimes[0];
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing pending reports: {ex.Message}");
+        }
     }
+
+    private static void ProcessScheduledReport(DateTime scheduledTime)
+    {
+        try
+        {
+            // Process the report without specifying filename - let EmailViewModel find the files
+            Console.WriteLine($"Processing scheduled report at {scheduledTime}");
+            var result = _viewModel.GenerateAndSendReport();
+
+            if (result.Success && !string.IsNullOrEmpty(result.FileName))
+            {
+                // Get the actual filename from EmailViewModel
+                string fileName = result.FileName;
+
+                // Ensure JSON entry exists for this scheduled time
+                _reportStateService.EnsureReportEntry(scheduledTime, fileName);
+
+                // Update JSON entry on success
+                _reportStateService.UpdateReportEntryAfterSend(scheduledTime, fileName, true);
+                Console.WriteLine($"Successfully processed scheduled report: {fileName}");
+            }
+            else
+            {
+                // If processing failed but we got a filename, create entry so safety net can retry
+                if (!string.IsNullOrEmpty(result.FileName))
+                {
+                    string fileName = result.FileName;
+                    _reportStateService.EnsureReportEntry(scheduledTime, fileName);
+                    // Keep sendMail as false so safety net can retry
+                    Console.WriteLine($"Failed to process scheduled report: {fileName}. Will be retried by safety net.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing scheduled report: {ex.Message}");
+        }
+    }
+
+    private static string GetShiftFromTime(DateTime time)
+    {
+        int hour = time.Hour;
+        if (hour >= 6 && hour < 14) return "1"; // 6 AM to 2 PM
+        else if (hour >= 14 && hour < 22) return "2"; // 2 PM to 10 PM
+        else return "3"; // 10 PM to 6 AM
+    }
+
+    private static DateTime GetNextScheduledTime(DateTime now)
+    {
+        while (true)
+        {
+            var day = now.DayOfWeek;
+
+            // Saturday: skip entirely
+            if (day == DayOfWeek.Saturday)
+            {
+                now = now.Date.AddDays(1); // move to Sunday 00:00
+                continue;
+            }
+
+            // Sunday: only allow 22:00
+            if (day == DayOfWeek.Sunday)
+            {
+                DateTime sundaySlot = now.Date.AddHours(22);
+
+                if (sundaySlot > now)
+                    return sundaySlot;
+
+                // Sunday 22:00 already passed → move to Monday
+                now = now.Date.AddDays(1);
+                continue;
+            }
+
+            // Weekdays (Mon–Fri): 06:00, 14:00, 22:00
+            TimeSpan[] weekdaySlots =
+            {
+            new TimeSpan(6, 0, 0),
+            new TimeSpan(14, 0, 0),
+            new TimeSpan(22, 0, 0)
+        };
+
+            foreach (var slot in weekdaySlots)
+            {
+                DateTime candidate = now.Date + slot;
+                if (candidate > now)
+                    return candidate;
+            }
+
+            // All slots today passed → move to next day
+            now = now.Date.AddDays(1);
+        }
+    }
+
 
     private static string GetCurrentShift(DateTime now)
     {

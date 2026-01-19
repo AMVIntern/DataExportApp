@@ -15,7 +15,7 @@ public class EmailViewModel
         _emailData = emailData ?? throw new ArgumentNullException(nameof(emailData));
     }
 
-    public void GenerateAndSendReport()
+    public (bool Success, string FileName) GenerateAndSendReport(string fileName = null)
     {
         try
         {
@@ -26,28 +26,58 @@ public class EmailViewModel
             // Create combined folder if it doesn't exist
             Directory.CreateDirectory(combinedFolder);
 
-            // Find most recent CSV file containing "values" in Top folder
-            string topFile = Directory.GetFiles(topFolder, "*.csv")
-                .Where(f => Path.GetFileName(f).ToLower().Contains("values"))
-                .OrderByDescending(f => File.GetLastWriteTime(f))
-                .FirstOrDefault();
+            string topFile;
+            string bottomFile;
+            string actualFileName;
 
-            if (topFile == null)
+            if (!string.IsNullOrEmpty(fileName))
             {
-                Console.WriteLine("No CSV file containing 'values' found in Top folder.");
-                return;
+                // Use specific filename
+                topFile = Path.Combine(topFolder, fileName);
+                bottomFile = Path.Combine(bottomFolder, fileName);
+
+                if (!File.Exists(topFile))
+                {
+                    Console.WriteLine($"File '{fileName}' not found in Top folder.");
+                    return (false, fileName);
+                }
+
+                if (!File.Exists(bottomFile))
+                {
+                    Console.WriteLine($"File '{fileName}' not found in Bottom folder.");
+                    return (false, fileName);
+                }
+
+                actualFileName = fileName;
             }
-
-            // Find most recent CSV file containing "values" in Bottom folder
-            string bottomFile = Directory.GetFiles(bottomFolder, "*.csv")
-                .Where(f => Path.GetFileName(f).ToLower().Contains("values"))
-                .OrderByDescending(f => File.GetLastWriteTime(f))
-                .FirstOrDefault();
-
-            if (bottomFile == null)
+            else
             {
-                Console.WriteLine("No CSV file containing 'values' found in Bottom folder.");
-                return;
+                // Find most recent CSV file containing "values" in Top folder
+                topFile = Directory.GetFiles(topFolder, "*.csv")
+                    .Where(f => Path.GetFileName(f).ToLower().Contains("values"))
+                    .OrderByDescending(f => File.GetLastWriteTime(f))
+                    .FirstOrDefault();
+
+                if (topFile == null)
+                {
+                    Console.WriteLine("No CSV file containing 'values' found in Top folder.");
+                    return (false, null);
+                }
+
+                // Find most recent CSV file containing "values" in Bottom folder
+                bottomFile = Directory.GetFiles(bottomFolder, "*.csv")
+                    .Where(f => Path.GetFileName(f).ToLower().Contains("values"))
+                    .OrderByDescending(f => File.GetLastWriteTime(f))
+                    .FirstOrDefault();
+
+                if (bottomFile == null)
+                {
+                    Console.WriteLine("No CSV file containing 'values' found in Bottom folder.");
+                    return (false, null);
+                }
+
+                // Extract filename from topFile (both should have same filename)
+                actualFileName = Path.GetFileName(topFile);
             }
 
             // Read Top CSV with dynamic column handling
@@ -55,7 +85,7 @@ public class EmailViewModel
             if (topData == null || topData.Rows.Count == 0)
             {
                 Console.WriteLine("Top CSV file has insufficient data rows.");
-                return;
+                return (false, actualFileName);
             }
 
             // Read Bottom CSV with dynamic column handling
@@ -63,7 +93,7 @@ public class EmailViewModel
             if (bottomData == null || bottomData.Rows.Count == 0)
             {
                 Console.WriteLine("Bottom CSV file has insufficient data rows.");
-                return;
+                return (false, actualFileName);
             }
 
             // Find date and timestamp columns dynamically
@@ -76,7 +106,7 @@ public class EmailViewModel
                 string.IsNullOrEmpty(bottomDateCol) || string.IsNullOrEmpty(bottomTimestampCol))
             {
                 Console.WriteLine("Could not find required date/timestamp columns in CSV files.");
-                return;
+                return (false, actualFileName);
             }
 
             // Calculate full timestamps for matching
@@ -166,7 +196,7 @@ public class EmailViewModel
             if (combinedRows.Count == 0)
             {
                 Console.WriteLine("No matching rows found between Top and Bottom CSV files.");
-                return;
+                return (false, actualFileName);
             }
 
             // Save combined CSV
@@ -200,12 +230,14 @@ public class EmailViewModel
             _emailData.AttachmentPath = combinedFile;
             _emailData.Subject = string.Format(_emailData.Subject, combinedDate, combinedShift);
             _emailData.Body = $"Please find attached the Gocator Report for {combinedDate} corresponding to Shift {combinedShift}.";
-            SendEmail();
+            bool emailSent = SendEmail();
+            return (emailSent, actualFileName);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error generating report: {ex.Message}");
             Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            return (false, null);
         }
     }
 
